@@ -35,7 +35,7 @@ int main()
 
     // Game loop
     bool quit = false;
-    const int numPoints = 2;
+    const int numPoints = 20;
     const double radius = 100.0;
     const int max_width = 100;
     const int max_height = 100;
@@ -45,6 +45,12 @@ int main()
     vector<Point> points = get_points(radius, numPoints);
     vector<SDL_Rect> rects = get_rects(points, max_height, max_width, numPoints, winHeight, winWidth, min_height, min_width);
 
+    vector<Agent> agents(numPoints);
+    for (int i = 0; i < numPoints; ++i) {
+        agents[i].rect = rects[i];
+        agents[i].velocity = {0.0, 0.0}; // Initialize velocity as zero
+    }
+
     SDL_Event e;
     while (!quit) {
         while (SDL_PollEvent(&e) != 0) {
@@ -53,9 +59,20 @@ int main()
             }
         }
 
-        for (size_t i = 0; i < numPoints; ++i) {
-            vector<int> pos = get_push_back(rects[i], rects, radius, numPoints, i);
-            
+        updateAgents(agents, 1000, 1000, 200);
+
+        if (isSingleMass(agents)) {
+            cout << "All rectangles form a single mass." << endl;
+        } else {
+            cout << "There are solitary groups of rectangles." << endl;
+            moveSmallestGroup(agents, 1000, 1000);
+        }
+
+        //moveRectsToCenter(agents, 1000, 1000);
+
+        // Convert Agents back to SDL_Rects for rendering
+        for (int i = 0; i < numPoints; ++i) {
+            rects[i] = agents[i].rect;
         }
 
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
@@ -65,7 +82,7 @@ int main()
             SDL_RenderDrawRect(ren, &rects[i]);
         }
         SDL_RenderPresent(ren);
-        SDL_Delay(100);
+        SDL_Delay(10);
     }
 
     // Cleanup
@@ -75,3 +92,5 @@ int main()
 
     return 0;
 }
+
+

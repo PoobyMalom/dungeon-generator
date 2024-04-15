@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <unistd.h>
+#include "Collision.h"
+#include <stack>
 using namespace std;
 
 Point get_random_point_in_circle(double radius)
@@ -59,18 +61,18 @@ double ydistance(const SDL_Rect& rect1, SDL_Rect& rect2)
     return (rect1.y - rect2.y);
 }
 
-vector<int> get_push_back(const SDL_Rect& rect, vector<SDL_Rect>& rects, int radius, int numPoints, size_t index)
+vector<int> get_push_back(const SDL_Rect& rect, vector<SDL_Rect>& rects, int numPoints, int index)
 {
     vector<int> pos(2, 0); // Initialize position vector with zeros
     
-    for (size_t i = index+1; i < numPoints; i++) 
+    for (int i = index+1; i < numPoints; i++) 
     {
         SDL_Rect temp_rect = rects[i];
         PenetrationAxis collisionAxis = CheckCollision(rect, temp_rect);
         if (collisionAxis == PenetrationAxis::X) {
-            pos[0] += xdistance(rect, temp_rect)/10;
+            pos[0] += 2 * rect.w/xdistance(rect, temp_rect);
         } else if (collisionAxis == PenetrationAxis::Y) {
-            pos[1] += ydistance(rect, temp_rect)/10;
+            pos[1] += 2 * rect.h/ydistance(rect, temp_rect);
         }
     }
     return pos;   
@@ -104,4 +106,212 @@ PenetrationAxis CheckCollision(const SDL_Rect& rectA, const SDL_Rect& rectB) {
 
     // No collision
     return None;
+}
+
+void updateAgents(vector<Agent>& agents, int winWidth, int winHeight, double radius) {
+    double scale = 0.05; // Increase the scale of the separation force
+    double cohesionScale = 0.01;
+    double boundaryScale = 0.01;
+    double maxVelocity = 5.0;
+    double boundaryThreshold = 50.0;
+
+    double centerX = 0;
+    double centerY = 0;
+    for (Agent& A : agents) {
+        centerX += A.rect.x;
+        centerY += A.rect.y;
+    }
+    centerX /= agents.size();
+    centerY /= agents.size();
+
+    for (Agent& A : agents) {
+        vector<double> separationForce(2, 0);
+        bool isOverlapping = false;
+        for (Agent& B : agents) {
+            if (&A != &B) {
+                polygon polyA = rectToPolygon(A.rect);
+                polygon polyB = rectToPolygon(B.rect);
+                if (sat(polyA, polyB)) {
+                    vector<double> force = {static_cast<double>(A.rect.x) - B.rect.x, static_cast<double>(A.rect.y) - B.rect.y};
+                    double invDistance = 1.0 / sqrt(force[0]*force[0] + force[1]*force[1]);
+                    force[0] *= invDistance;
+                    force[1] *= invDistance;
+                    separationForce[0] += force[0];
+                    separationForce[1] += force[1];
+                    isOverlapping = true;
+                }
+            }
+        }
+
+        if (!isOverlapping) {
+        // Move towards the center of mass
+            A.velocity[0] = (centerX - A.rect.x) * cohesionScale;
+            A.velocity[1] = (centerY - A.rect.y) * cohesionScale;
+        } else {
+            if (abs(separationForce[0]) > abs(separationForce[1])) {
+                separationForce[1] = 0;
+            } else {
+                separationForce[0] = 0;
+            }
+
+            A.velocity[0] += separationForce[0] * scale;
+            A.velocity[1] += separationForce[1] * scale;
+
+            double distanceToCenterSquared = (A.rect.x - centerX) * (A.rect.x - centerX) + (A.rect.y - centerY) * (A.rect.y - centerY);
+            if (distanceToCenterSquared > radius * radius) {
+                A.velocity[0] += (centerX - A.rect.x) * cohesionScale;
+                A.velocity[1] += (centerY - A.rect.y) * cohesionScale;
+            }
+
+            if (A.rect.x < boundaryThreshold) {
+                A.velocity[0] += boundaryScale;
+            } else if (A.rect.x + A.rect.w > winWidth - boundaryThreshold) {
+                A.velocity[0] -= boundaryScale;
+            }
+
+            if (A.rect.y < boundaryThreshold) {
+                A.velocity[1] += boundaryScale;
+            } else if (A.rect.y + A.rect.h > winHeight - boundaryThreshold) {
+                A.velocity[1] -= boundaryScale;
+            }
+
+            double velocityMagnitudeSquared = A.velocity[0]*A.velocity[0] + A.velocity[1]*A.velocity[1];
+            if (velocityMagnitudeSquared > maxVelocity * maxVelocity) {
+                double invVelocityMagnitude = 1.0 / sqrt(velocityMagnitudeSquared);
+                A.velocity[0] *= invVelocityMagnitude * maxVelocity;
+                A.velocity[1] *= invVelocityMagnitude * maxVelocity;
+            }
+        }
+
+        A.rect.x += A.velocity[0];
+        A.rect.y += A.velocity[1];
+    }
+}
+
+bool isSingleMass(vector<Agent>& agents) {
+    int n = agents.size();
+    vector<vector<int>> adj(n); // adjacency list
+    vector<bool> visited(n, false);
+
+    // Build the adjacency list
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            polygon polyA = rectToPolygon(agents[i].rect);
+            polygon polyB = rectToPolygon(agents[j].rect);
+            if (sat(polyA, polyB)) {
+                adj[i].push_back(j);
+                adj[j].push_back(i);
+            }
+        }
+    }
+
+    // Depth-first search
+    stack<int> s;
+    s.push(0);
+    visited[0] = true;
+    while (!s.empty()) {
+        int v = s.top();
+        s.pop();
+        for (int u : adj[v]) {
+            if (!visited[u]) {
+                s.push(u);
+                visited[u] = true;
+            }
+        }
+    }
+
+    // Check if all rectangles were visited
+    for (bool v : visited) {
+        if (!v) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void moveSmallestGroup(vector<Agent>& agents, int winWidth, int winHeight) {
+    int n = agents.size();
+    vector<vector<int>> adj(n); // adjacency list
+    vector<bool> visited(n, false);
+    vector<vector<int>> groups;
+
+    // Build the adjacency list
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            polygon polyA = rectToPolygon(agents[i].rect);
+            polygon polyB = rectToPolygon(agents[j].rect);
+            if (sat(polyA, polyB)) {
+                adj[i].push_back(j);
+                adj[j].push_back(i);
+            }
+        }
+    }
+
+    // Depth-first search to find the connected components
+    for (int i = 0; i < n; ++i) {
+        if (!visited[i]) {
+            stack<int> s;
+            s.push(i);
+            visited[i] = true;
+            vector<int> group;
+            while (!s.empty()) {
+                int v = s.top();
+                s.pop();
+                group.push_back(v);
+                for (int u : adj[v]) {
+                    if (!visited[u]) {
+                        s.push(u);
+                        visited[u] = true;
+                    }
+                }
+            }
+            groups.push_back(group);
+        }
+    }
+
+    // Find the smallest group and the center of the larger group
+    int minSize = n;
+    int minIndex = -1;
+    double centerX = 0.0;
+    double centerY = 0.0;
+    for (int i = 0; i < groups.size(); ++i) {
+        if (groups[i].size() < minSize) {
+            minSize = groups[i].size();
+            minIndex = i;
+        } else {
+            for (int j : groups[i]) {
+                centerX += agents[j].rect.x;
+                centerY += agents[j].rect.y;
+            }
+        }
+    }
+    centerX /= (n - minSize);
+    centerY /= (n - minSize);
+
+    // Move the rectangles in the smallest group towards the center of the larger group
+    for (int i : groups[minIndex]) {
+        double dx = centerX - agents[i].rect.x;
+        double dy = centerY - agents[i].rect.y;
+        double dist = sqrt(dx*dx + dy*dy);
+        agents[i].rect.x += dx / dist;
+        agents[i].rect.y += dy / dist;
+    }
+}
+
+void centerRects(vector<Agent>& agents, int centerX, int centerY) {
+    for (Agent& agent : agents) {
+        // Calculate the direction vector from the agent to the center point
+        int dx = centerX - agent.rect.x;
+        int dy = centerY - agent.rect.y;
+
+        // Normalize the direction vector
+        double length = sqrt(dx * dx + dy * dy);
+        dx /= length;
+        dy /= length;
+
+        // Move the agent slightly towards the center point
+        agent.rect.x += dx;
+        agent.rect.y += dy;
+    }
 }
